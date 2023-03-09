@@ -178,14 +178,18 @@ class YOLOModel(object):
         #检查图片确实存在
         if isinstance(image_path, str):
             logging.info(f"预测本地的一个单张的图片")
+            image_pathes = [image_path]
         else:
             logging.info(f"预测本地的图片列表")
-        if os.path.exists(image_path):
-            prediction = self.predict(image_path)
-            one_prediction = prediction[0]
-            results = {"code": 200, "msg": "success", "data": one_prediction}
-        else:
-            results = {"code": 500, "msg": "图片不存在", "data": []}
+            image_pathes = image_path
+        for img_path in image_pathes:
+            if not os.path.exists(img_path):
+                logging.error(f"{img_path}图片不存在")
+                return {"code": 500, "msg": f"图片不存在: {img_path}", "data": []}
+        prediction = self.predict(image_pathes)
+        if isinstance(image_path, str):
+            prediction = prediction[0]
+        results = {"code": 200, "msg": "success", "data": prediction}
         return results
     def predict_url(self, url):
         """
@@ -194,16 +198,25 @@ class YOLOModel(object):
         """
         #检查图片确实存在
         logging.info(f"预测本地的一个的图片的url地址")
-        image_suffix = url.split('.')[-1]
-        md5 = self.cal_md5(url)
-        new_image_name = md5 + '.' + image_suffix
-        image_path = os.path.join(self.upload_dir, new_image_name)
-        download_reuslt = self.download(image_url=url, image_path_name=image_path)
-        if download_reuslt:
-            prediction = self.predict(image_path)
-            results = {"code": 200, "msg": "success", "data": prediction[0]}
+        if isinstance(url, str):
+            urls = [url]
         else:
-            results = {"code": 400, "msg": "图片下载失败，请检查图片地址是否正确", "data": ""}
+            urls = url
+        image_pathes = []
+        for ul in urls:
+            image_suffix = ul.split('.')[-1]
+            md5 = self.cal_md5(ul)
+            new_image_name = md5 + '.' + image_suffix
+            image_path = os.path.join(self.upload_dir, new_image_name)
+            download_reuslt = self.download(image_url=ul, image_path_name=image_path)
+            if not download_reuslt:
+                results = {"code": 400, "msg": f"图片下载失败，请检查图片地址是否正确: {ul}", "data": []}
+                return results
+            image_pathes.append(image_path)
+        prediction = self.predict(image_pathes)
+        if isinstance(url, str):
+            prediction = prediction[0]
+        results = {"code": 200, "msg": "success", "data": prediction}
         return results
     def predict_raw_image(self, raw_file, image_name=None):
         """
@@ -267,6 +280,7 @@ def predict():
     test_data = jsonres.get('data', None)
     logger.info(f"收到的数据是:{test_data}")
     file_format = jsonres.get('format', "image")
+    logger.info(f"参数是:{file_format}")
     if file_format == "image":
         results = model.predict_image(image_path=test_data)
     elif file_format == "directory":
