@@ -2,7 +2,7 @@
 """
 Ultralytics Results, Boxes and Masks classes for handling inference results
 
-Usage: See https://docs.ultralytics.com/predict/
+Usage: See https://docs.ultralytics.com/modes/predict/
 """
 
 from copy import deepcopy
@@ -12,11 +12,59 @@ import numpy as np
 import torch
 import torchvision.transforms.functional as F
 
-from ultralytics.yolo.utils import LOGGER, ops
+from ultralytics.yolo.utils import LOGGER, SimpleClass, deprecation_warn, ops
 from ultralytics.yolo.utils.plotting import Annotator, colors
+from ultralytics.yolo.utils.torch_utils import TORCHVISION_0_10
 
 
-class Results:
+class BaseTensor(SimpleClass):
+    """
+
+    Attributes:
+        tensor (torch.Tensor): A tensor.
+        orig_shape (tuple): Original image size, in the format (height, width).
+
+    Methods:
+        cpu(): Returns a copy of the tensor on CPU memory.
+        numpy(): Returns a copy of the tensor as a numpy array.
+        cuda(): Returns a copy of the tensor on GPU memory.
+        to(): Returns a copy of the tensor with the specified device and dtype.
+    """
+
+    def __init__(self, tensor, orig_shape) -> None:
+        super().__init__()
+        assert isinstance(tensor, torch.Tensor)
+        self.tensor = tensor
+        self.orig_shape = orig_shape
+
+    @property
+    def shape(self):
+        return self.data.shape
+
+    @property
+    def data(self):
+        return self.tensor
+
+    def cpu(self):
+        return self.__class__(self.data.cpu(), self.orig_shape)
+
+    def numpy(self):
+        return self.__class__(self.data.numpy(), self.orig_shape)
+
+    def cuda(self):
+        return self.__class__(self.data.cuda(), self.orig_shape)
+
+    def to(self, *args, **kwargs):
+        return self.__class__(self.data.to(*args, **kwargs), self.orig_shape)
+
+    def __len__(self):  # override len(results)
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        return self.__class__(self.data[idx], self.orig_shape)
+
+
+class Results(SimpleClass):
     """
     A class for storing and manipulating inference results.
 
@@ -39,23 +87,24 @@ class Results:
         _keys (tuple): A tuple of attribute names for non-empty attributes.
     """
 
-    def __init__(self, orig_img, path, names, boxes=None, masks=None, probs=None) -> None:
+    def __init__(self, orig_img, path, names, boxes=None, masks=None, probs=None, keypoints=None) -> None:
         self.orig_img = orig_img
         self.orig_shape = orig_img.shape[:2]
         self.boxes = Boxes(boxes, self.orig_shape) if boxes is not None else None  # native size boxes
         self.masks = Masks(masks, self.orig_shape) if masks is not None else None  # native size or imgsz masks
         self.probs = probs if probs is not None else None
+        self.keypoints = keypoints if keypoints is not None else None
         self.names = names
         self.path = path
-        self._keys = (k for k in ('boxes', 'masks', 'probs') if getattr(self, k) is not None)
+        self._keys = ('boxes', 'masks', 'probs', 'keypoints')
 
     def pandas(self):
         pass
         # TODO masks.pandas + boxes.pandas + cls.pandas
 
     def __getitem__(self, idx):
-        r = Results(orig_img=self.orig_img, path=self.path, names=self.names)
-        for k in self._keys:
+        r = self.new()
+        for k in self.keys:
             setattr(r, k, getattr(self, k)[idx])
         return r
 
@@ -64,90 +113,123 @@ class Results:
             self.boxes = Boxes(boxes, self.orig_shape)
         if masks is not None:
             self.masks = Masks(masks, self.orig_shape)
-        if boxes is not None:
+        if probs is not None:
             self.probs = probs
 
     def cpu(self):
-        r = Results(orig_img=self.orig_img, path=self.path, names=self.names)
-        for k in self._keys:
+        r = self.new()
+        for k in self.keys:
             setattr(r, k, getattr(self, k).cpu())
         return r
 
     def numpy(self):
-        r = Results(orig_img=self.orig_img, path=self.path, names=self.names)
-        for k in self._keys:
+        r = self.new()
+        for k in self.keys:
             setattr(r, k, getattr(self, k).numpy())
         return r
 
     def cuda(self):
-        r = Results(orig_img=self.orig_img, path=self.path, names=self.names)
-        for k in self._keys:
+        r = self.new()
+        for k in self.keys:
             setattr(r, k, getattr(self, k).cuda())
         return r
 
     def to(self, *args, **kwargs):
-        r = Results(orig_img=self.orig_img, path=self.path, names=self.names)
-        for k in self._keys:
+        r = self.new()
+        for k in self.keys:
             setattr(r, k, getattr(self, k).to(*args, **kwargs))
         return r
 
     def __len__(self):
-        for k in self._keys:
+        for k in self.keys:
             return len(getattr(self, k))
 
-    def __str__(self):
-        return ''.join(getattr(self, k).__str__() for k in self._keys)
+    def new(self):
+        return Results(orig_img=self.orig_img, path=self.path, names=self.names)
 
-    def __repr__(self):
-        return ''.join(getattr(self, k).__repr__() for k in self._keys)
+    @property
+    def keys(self):
+        return [k for k in self._keys if getattr(self, k) is not None]
 
-    def __getattr__(self, attr):
-        name = self.__class__.__name__
-        raise AttributeError(f"'{name}' object has no attribute '{attr}'. See valid attributes below.\n{self.__doc__}")
-
-    def plot(self, show_conf=True, line_width=None, font_size=None, font='Arial.ttf', pil=False, example='abc'):
+    def plot(
+            self,
+            conf=True,
+            line_width=None,
+            font_size=None,
+            font='Arial.ttf',
+            pil=False,
+            example='abc',
+            img=None,
+            kpt_line=True,
+            labels=True,
+            boxes=True,
+            masks=True,
+            probs=True,
+            **kwargs  # deprecated args TODO: remove support in 8.2
+    ):
         """
         Plots the detection results on an input RGB image. Accepts a numpy array (cv2) or a PIL Image.
 
         Args:
-            show_conf (bool): Whether to show the detection confidence score.
+            conf (bool): Whether to plot the detection confidence score.
             line_width (float, optional): The line width of the bounding boxes. If None, it is scaled to the image size.
             font_size (float, optional): The font size of the text. If None, it is scaled to the image size.
             font (str): The font to use for the text.
             pil (bool): Whether to return the image as a PIL Image.
             example (str): An example string to display. Useful for indicating the expected format of the output.
+            img (numpy.ndarray): Plot to another image. if not, plot to original image.
+            kpt_line (bool): Whether to draw lines connecting keypoints.
+            labels (bool): Whether to plot the label of bounding boxes.
+            boxes (bool): Whether to plot the bounding boxes.
+            masks (bool): Whether to plot the masks.
+            probs (bool): Whether to plot classification probability
 
         Returns:
             (None) or (PIL.Image): If `pil` is True, a PIL Image is returned. Otherwise, nothing is returned.
         """
-        img = deepcopy(self.orig_img)
-        annotator = Annotator(img, line_width, font_size, font, pil, example)
-        boxes = self.boxes
-        masks = self.masks
-        logits = self.probs
+        # Deprecation warn TODO: remove in 8.2
+        if 'show_conf' in kwargs:
+            deprecation_warn('show_conf', 'conf')
+            conf = kwargs['show_conf']
+            assert type(conf) == bool, '`show_conf` should be of boolean type, i.e, show_conf=True/False'
+
+        annotator = Annotator(deepcopy(self.orig_img if img is None else img), line_width, font_size, font, pil,
+                              example)
+        pred_boxes, show_boxes = self.boxes, boxes
+        pred_masks, show_masks = self.masks, masks
+        pred_probs, show_probs = self.probs, probs
         names = self.names
-        if boxes is not None:
-            for d in reversed(boxes):
-                cls, conf = d.cls.squeeze(), d.conf.squeeze()
-                c = int(cls)
-                label = (f'{names[c]}' if names else f'{c}') + (f'{conf:.2f}' if show_conf else '')
+        keypoints = self.keypoints
+        if pred_boxes and show_boxes:
+            for d in reversed(pred_boxes):
+                c, conf, id = int(d.cls), float(d.conf) if conf else None, None if d.id is None else int(d.id.item())
+                name = ('' if id is None else f'id:{id} ') + names[c]
+                label = (f'{name} {conf:.2f}' if conf else name) if labels else None
                 annotator.box_label(d.xyxy.squeeze(), label, color=colors(c, True))
 
-        if masks is not None:
-            im = torch.as_tensor(img, dtype=torch.float16, device=masks.data.device).permute(2, 0, 1).flip(0)
-            im = F.resize(im.contiguous(), masks.data.shape[1:]) / 255
-            annotator.masks(masks.data, colors=[colors(x, True) for x in boxes.cls], im_gpu=im)
+        if pred_masks and show_masks:
+            im = torch.as_tensor(annotator.im, dtype=torch.float16, device=pred_masks.data.device).permute(2, 0,
+                                                                                                           1).flip(0)
+            if TORCHVISION_0_10:
+                im = F.resize(im.contiguous(), pred_masks.data.shape[1:], antialias=True) / 255
+            else:
+                im = F.resize(im.contiguous(), pred_masks.data.shape[1:]) / 255
+            annotator.masks(pred_masks.data, colors=[colors(x, True) for x in pred_boxes.cls], im_gpu=im)
 
-        if logits is not None:
-            n5 = min(len(self.names), 5)
-            top5i = logits.argsort(0, descending=True)[:n5].tolist()  # top 5 indices
-            text = f"{', '.join(f'{names[j] if names else j} {logits[j]:.2f}' for j in top5i)}, "
+        if pred_probs is not None and show_probs:
+            n5 = min(len(names), 5)
+            top5i = pred_probs.argsort(0, descending=True)[:n5].tolist()  # top 5 indices
+            text = f"{', '.join(f'{names[j] if names else j} {pred_probs[j]:.2f}' for j in top5i)}, "
             annotator.text((32, 32), text, txt_color=(255, 255, 255))  # TODO: allow setting colors
 
-        return img
+        if keypoints is not None:
+            for k in reversed(keypoints):
+                annotator.kpts(k, self.orig_shape, kpt_line=kpt_line)
+
+        return np.asarray(annotator.im) if annotator.pil else annotator.im
 
 
-class Boxes:
+class Boxes(BaseTensor):
     """
     A class for storing and manipulating detection boxes.
 
@@ -184,7 +266,7 @@ class Boxes:
         if boxes.ndim == 1:
             boxes = boxes[None, :]
         n = boxes.shape[-1]
-        assert n in {6, 7}, f'expected `n` in [6, 7], but got {n}'  # xyxy, (track_id), conf, cls
+        assert n in (6, 7), f'expected `n` in [6, 7], but got {n}'  # xyxy, (track_id), conf, cls
         # TODO
         self.is_track = n == 7
         self.boxes = boxes
@@ -222,57 +304,15 @@ class Boxes:
     def xywhn(self):
         return self.xywh / self.orig_shape[[1, 0, 1, 0]]
 
-    def cpu(self):
-        return Boxes(self.boxes.cpu(), self.orig_shape)
-
-    def numpy(self):
-        return Boxes(self.boxes.numpy(), self.orig_shape)
-
-    def cuda(self):
-        return Boxes(self.boxes.cuda(), self.orig_shape)
-
-    def to(self, *args, **kwargs):
-        return Boxes(self.boxes.to(*args, **kwargs), self.orig_shape)
-
     def pandas(self):
         LOGGER.info('results.pandas() method not yet implemented')
-        '''
-        new = copy(self)  # return copy
-        ca = 'xmin', 'ymin', 'xmax', 'ymax', 'confidence', 'class', 'name'  # xyxy columns
-        cb = 'xcenter', 'ycenter', 'width', 'height', 'confidence', 'class', 'name'  # xywh columns
-        for k, c in zip(['xyxy', 'xyxyn', 'xywh', 'xywhn'], [ca, ca, cb, cb]):
-            a = [[x[:5] + [int(x[5]), self.names[int(x[5])]] for x in x.tolist()] for x in getattr(self, k)]  # update
-            setattr(new, k, [pd.DataFrame(x, columns=c) for x in a])
-        return new
-        '''
-
-    @property
-    def shape(self):
-        return self.boxes.shape
 
     @property
     def data(self):
         return self.boxes
 
-    def __len__(self):  # override len(results)
-        return len(self.boxes)
 
-    def __str__(self):
-        return self.boxes.__str__()
-
-    def __repr__(self):
-        return (f'Ultralytics YOLO {self.__class__} masks\n' + f'type: {type(self.boxes)}\n' +
-                f'shape: {self.boxes.shape}\n' + f'dtype: {self.boxes.dtype}\n + {self.boxes.__repr__()}')
-
-    def __getitem__(self, idx):
-        return Boxes(self.boxes[idx], self.orig_shape)
-
-    def __getattr__(self, attr):
-        name = self.__class__.__name__
-        raise AttributeError(f"'{name}' object has no attribute '{attr}'. See valid attributes below.\n{self.__doc__}")
-
-
-class Masks:
+class Masks(BaseTensor):
     """
     A class for storing and manipulating detection masks.
 
@@ -285,18 +325,14 @@ class Masks:
         orig_shape (tuple): Original image size, in the format (height, width).
 
     Properties:
-        segments (list): A list of segments which includes x, y, w, h, label, confidence, and mask of each detection.
+        xy (list): A list of segments (pixels) which includes x, y segments of each detection.
+        xyn (list): A list of segments (normalized) which includes x, y segments of each detection.
 
     Methods:
         cpu(): Returns a copy of the masks tensor on CPU memory.
         numpy(): Returns a copy of the masks tensor as a numpy array.
         cuda(): Returns a copy of the masks tensor on GPU memory.
         to(): Returns a copy of the masks tensor with the specified device and dtype.
-        __len__(): Returns the number of masks in the tensor.
-        __str__(): Returns a string representation of the masks tensor.
-        __repr__(): Returns a detailed string representation of the masks tensor.
-        __getitem__(): Returns a new Masks object with the masks at the specified index.
-        __getattr__(): Raises an AttributeError with a list of valid attributes and properties.
     """
 
     def __init__(self, masks, orig_shape) -> None:
@@ -306,43 +342,27 @@ class Masks:
     @property
     @lru_cache(maxsize=1)
     def segments(self):
+        # Segments-deprecated (normalized)
+        LOGGER.warning("WARNING ⚠️ 'Masks.segments' is deprecated. Use 'Masks.xyn' for segments (normalized) and "
+                       "'Masks.xy' for segments (pixels) instead.")
+        return self.xyn
+
+    @property
+    @lru_cache(maxsize=1)
+    def xyn(self):
+        # Segments (normalized)
         return [
-            ops.scale_segments(self.masks.shape[1:], x, self.orig_shape, normalize=True)
+            ops.scale_coords(self.masks.shape[1:], x, self.orig_shape, normalize=True)
             for x in ops.masks2segments(self.masks)]
 
     @property
-    def shape(self):
-        return self.masks.shape
+    @lru_cache(maxsize=1)
+    def xy(self):
+        # Segments (pixels)
+        return [
+            ops.scale_coords(self.masks.shape[1:], x, self.orig_shape, normalize=False)
+            for x in ops.masks2segments(self.masks)]
 
     @property
     def data(self):
         return self.masks
-
-    def cpu(self):
-        return Masks(self.masks.cpu(), self.orig_shape)
-
-    def numpy(self):
-        return Masks(self.masks.numpy(), self.orig_shape)
-
-    def cuda(self):
-        return Masks(self.masks.cuda(), self.orig_shape)
-
-    def to(self, *args, **kwargs):
-        return Masks(self.masks.to(*args, **kwargs), self.orig_shape)
-
-    def __len__(self):  # override len(results)
-        return len(self.masks)
-
-    def __str__(self):
-        return self.masks.__str__()
-
-    def __repr__(self):
-        return (f'Ultralytics YOLO {self.__class__} masks\n' + f'type: {type(self.masks)}\n' +
-                f'shape: {self.masks.shape}\n' + f'dtype: {self.masks.dtype}\n + {self.masks.__repr__()}')
-
-    def __getitem__(self, idx):
-        return Masks(self.masks[idx], self.orig_shape)
-
-    def __getattr__(self, attr):
-        name = self.__class__.__name__
-        raise AttributeError(f"'{name}' object has no attribute '{attr}'. See valid attributes below.\n{self.__doc__}")

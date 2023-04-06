@@ -41,7 +41,7 @@ class DetectionTrainer(BaseTrainer):
                                  shuffle=mode == 'train',
                                  seed=self.args.seed)[0] if self.args.v5loader else \
             build_dataloader(self.args, batch_size, img_path=dataset_path, stride=gs, rank=rank, mode=mode,
-                             rect=mode == 'val', names=self.data['names'])[0]
+                             rect=mode == 'val', data_info=self.data)[0]
 
     def preprocess_batch(self, batch):
         batch['img'] = batch['img'].to(self.device, non_blocking=True).float() / 255
@@ -58,10 +58,9 @@ class DetectionTrainer(BaseTrainer):
         # TODO: self.model.class_weights = labels_to_class_weights(dataset.labels, nc).to(device) * nc
 
     def get_model(self, cfg=None, weights=None, verbose=True):
-        model = DetectionModel(cfg, ch=3, nc=self.data['nc'], verbose=verbose and RANK == -1)
+        model = DetectionModel(cfg, nc=self.data['nc'], verbose=verbose and RANK == -1)
         if weights:
             model.load(weights)
-
         return model
 
     def get_validator(self):
@@ -124,13 +123,8 @@ class Loss:
         self.device = device
 
         self.use_dfl = m.reg_max > 1
-        roll_out_thr = h.min_memory if h.min_memory > 1 else 64 if h.min_memory else 0  # 64 is default
 
-        self.assigner = TaskAlignedAssigner(topk=10,
-                                            num_classes=self.nc,
-                                            alpha=0.5,
-                                            beta=6.0,
-                                            roll_out_thr=roll_out_thr)
+        self.assigner = TaskAlignedAssigner(topk=10, num_classes=self.nc, alpha=0.5, beta=6.0)
         self.bbox_loss = BboxLoss(m.reg_max - 1, use_dfl=self.use_dfl).to(device)
         self.proj = torch.arange(m.reg_max, dtype=torch.float, device=device)
 
@@ -140,6 +134,7 @@ class Loss:
         else:
             i = targets[:, 0]  # image index
             _, counts = i.unique(return_counts=True)
+            counts = counts.to(dtype=torch.int32)
             out = torch.zeros(batch_size, counts.max(), 5, device=self.device)
             for j in range(batch_size):
                 matches = i == j

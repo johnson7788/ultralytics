@@ -26,11 +26,9 @@ import platform
 import time
 from pathlib import Path
 
-import pandas as pd
-
 from ultralytics import YOLO
 from ultralytics.yolo.engine.exporter import export_formats
-from ultralytics.yolo.utils import LINUX, LOGGER, ROOT, SETTINGS
+from ultralytics.yolo.utils import LINUX, LOGGER, MACOS, ROOT, SETTINGS
 from ultralytics.yolo.utils.checks import check_yolo
 from ultralytics.yolo.utils.downloads import download
 from ultralytics.yolo.utils.files import file_size
@@ -38,6 +36,9 @@ from ultralytics.yolo.utils.torch_utils import select_device
 
 
 def benchmark(model=Path(SETTINGS['weights_dir']) / 'yolov8n.pt', imgsz=160, half=False, device='cpu', hard_fail=False):
+    import pandas as pd
+    pd.options.display.max_columns = 10
+    pd.options.display.width = 120
     device = select_device(device, verbose=False)
     if isinstance(model, (str, Path)):
         model = YOLO(model)
@@ -45,10 +46,11 @@ def benchmark(model=Path(SETTINGS['weights_dir']) / 'yolov8n.pt', imgsz=160, hal
     y = []
     t0 = time.time()
     for i, (name, format, suffix, cpu, gpu) in export_formats().iterrows():  # index, (name, format, suffix, CPU, GPU)
-        emoji = '❌'  # indicates export failure
+        emoji, filename = '❌', None  # export defaults
         try:
-            assert i != 11, 'paddle exports coming soon'
             assert i != 9 or LINUX, 'Edge TPU export only supported on Linux'
+            if i == 10:
+                assert MACOS or LINUX, 'TF.js export only supported on macOS and Linux'
             if 'cpu' in device.type:
                 assert cpu, 'inference not supported on CPU'
             if 'cuda' in device.type:
@@ -73,11 +75,13 @@ def benchmark(model=Path(SETTINGS['weights_dir']) / 'yolov8n.pt', imgsz=160, hal
 
             # Validate
             if model.task == 'detect':
-                data, key = 'coco128.yaml', 'metrics/mAP50-95(B)'
+                data, key = 'coco8.yaml', 'metrics/mAP50-95(B)'
             elif model.task == 'segment':
-                data, key = 'coco128-seg.yaml', 'metrics/mAP50-95(M)'
+                data, key = 'coco8-seg.yaml', 'metrics/mAP50-95(M)'
             elif model.task == 'classify':
                 data, key = 'imagenet100', 'metrics/accuracy_top5'
+            elif model.task == 'pose':
+                data, key = 'coco8-pose.yaml', 'metrics/mAP50-95(P)'
 
             results = export.val(data=data, batch=1, imgsz=imgsz, plots=False, device=device, half=half, verbose=False)
             metric, speed = results.results_dict[key], results.speed['inference']
@@ -86,7 +90,7 @@ def benchmark(model=Path(SETTINGS['weights_dir']) / 'yolov8n.pt', imgsz=160, hal
             if hard_fail:
                 assert type(e) is AssertionError, f'Benchmark hard_fail for {name}: {e}'
             LOGGER.warning(f'ERROR ❌️ Benchmark failure for {name}: {e}')
-            y.append([name, emoji, None, None, None])  # mAP, t_inference
+            y.append([name, emoji, round(file_size(filename), 1), None, None])  # mAP, t_inference
 
     # Print results
     check_yolo(device=device)  # print system info

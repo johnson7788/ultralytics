@@ -10,14 +10,14 @@ import torch
 import torchvision
 from tqdm import tqdm
 
-from ..utils import NUM_THREADS, TQDM_BAR_FORMAT, is_dir_writeable
+from ..utils import LOCAL_RANK, NUM_THREADS, TQDM_BAR_FORMAT, is_dir_writeable
 from .augment import Compose, Format, Instances, LetterBox, classify_albumentations, classify_transforms, v8_transforms
 from .base import BaseDataset
-from .utils import HELP_URL, LOCAL_RANK, LOGGER, get_hash, img2label_paths, verify_image_label
+from .utils import HELP_URL, LOGGER, get_hash, img2label_paths, verify_image_label
 
 
 class YOLODataset(BaseDataset):
-    cache_version = '1.0.1'  # dataset labels *.cache version, >= 1.0.0 for YOLOv8
+    cache_version = '1.0.2'  # dataset labels *.cache version, >= 1.0.0 for YOLOv8
     rand_interp_methods = [cv2.INTER_NEAREST, cv2.INTER_LINEAR, cv2.INTER_CUBIC, cv2.INTER_AREA, cv2.INTER_LANCZOS4]
     """
     Dataset class for loading images object detection and/or segmentation labels in YOLO format.
@@ -57,12 +57,14 @@ class YOLODataset(BaseDataset):
                  single_cls=False,
                  use_segments=False,
                  use_keypoints=False,
-                 names=None):
+                 data=None,
+                 classes=None):
         self.use_segments = use_segments
         self.use_keypoints = use_keypoints
-        self.names = names
+        self.data = data
         assert not (self.use_segments and self.use_keypoints), 'Can not use both segments and keypoints.'
-        super().__init__(img_path, imgsz, cache, augment, hyp, prefix, rect, batch_size, stride, pad, single_cls)
+        super().__init__(img_path, imgsz, cache, augment, hyp, prefix, rect, batch_size, stride, pad, single_cls,
+                         classes)
 
     def cache_labels(self, path=Path('./labels.cache')):
         """Cache dataset labels, check images and read shapes.
@@ -75,10 +77,16 @@ class YOLODataset(BaseDataset):
         nm, nf, ne, nc, msgs = 0, 0, 0, 0, []  # number missing, found, empty, corrupt, messages
         desc = f'{self.prefix}Scanning {path.parent / path.stem}...'
         total = len(self.im_files)
+        nc = len(self.data['names'])
+        nkpt, ndim = self.data.get('kpt_shape', (0, 0))
+        if self.use_keypoints and (nkpt <= 0 or ndim not in (2, 3)):
+            raise ValueError("'kpt_shape' in data.yaml missing or incorrect. Should be a list with [number of "
+                             "keypoints, number of dims (2 for x,y or 3 for x,y,visible)], i.e. 'kpt_shape: [17, 3]'")
         with ThreadPool(NUM_THREADS) as pool:
             results = pool.imap(func=verify_image_label,
                                 iterable=zip(self.im_files, self.label_files, repeat(self.prefix),
-                                             repeat(self.use_keypoints), repeat(len(self.names))))
+                                             repeat(self.use_keypoints), repeat(len(self.data['names'])), repeat(nkpt),
+                                             repeat(ndim)))
             pbar = tqdm(results, desc=desc, total=total, bar_format=TQDM_BAR_FORMAT)
             for im_file, lb, shape, segments, keypoint, nm_f, nf_f, ne_f, nc_f, msg in pbar:
                 nm += nm_f
@@ -123,7 +131,10 @@ class YOLODataset(BaseDataset):
         self.label_files = img2label_paths(self.im_files)
         cache_path = Path(self.label_files[0]).parent.with_suffix('.cache')
         try:
+            import gc
+            gc.disable()  # reduce pickle load time https://github.com/ultralytics/ultralytics/pull/1585
             cache, exists = np.load(str(cache_path), allow_pickle=True).item(), True  # load dict
+            gc.enable()
             assert cache['version'] == self.cache_version  # matches current version
             assert cache['hash'] == get_hash(self.label_files + self.im_files)  # identical hash
         except (FileNotFoundError, AssertionError, AttributeError):
@@ -131,7 +142,7 @@ class YOLODataset(BaseDataset):
 
         # Display cache
         nf, nm, ne, nc, n = cache.pop('results')  # found, missing, empty, corrupt, total
-        if exists and LOCAL_RANK in {-1, 0}:
+        if exists and LOCAL_RANK in (-1, 0):
             d = f'Scanning {cache_path}... {nf} images, {nm + ne} backgrounds, {nc} corrupt'
             tqdm(None, desc=self.prefix + d, total=n, initial=n, bar_format=TQDM_BAR_FORMAT)  # display cache results
             if cache['msgs']:

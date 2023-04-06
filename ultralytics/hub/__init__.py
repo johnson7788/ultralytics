@@ -2,54 +2,51 @@
 
 import requests
 
-from ultralytics.hub.auth import Auth
-from ultralytics.hub.session import HUBTrainingSession
 from ultralytics.hub.utils import PREFIX, split_key
-from ultralytics.yolo.engine.exporter import EXPORT_FORMATS_LIST
-from ultralytics.yolo.engine.model import YOLO
-from ultralytics.yolo.utils import LOGGER, emojis
+from ultralytics.yolo.utils import LOGGER
 
-# Define all export formats
-EXPORT_FORMATS_HUB = EXPORT_FORMATS_LIST + ['ultralytics_tflite', 'ultralytics_coreml']
+
+def login(api_key=''):
+    """
+    Log in to the Ultralytics HUB API using the provided API key.
+
+    Args:
+        api_key (str, optional): May be an API key or a combination API key and model ID, i.e. key_id
+
+    Example:
+        from ultralytics import hub
+        hub.login('your_api_key')
+    """
+    from ultralytics.hub.auth import Auth
+    Auth(api_key)
+
+
+def logout():
+    """
+    Logout Ultralytics HUB
+
+    Example:
+        from ultralytics import hub
+        hub.logout()
+    """
+    LOGGER.warning('WARNING ⚠️ This method is not yet implemented.')
 
 
 def start(key=''):
     """
-    Start training models with Ultralytics HUB. Usage: from ultralytics.hub import start; start('API_KEY')
+    Start training models with Ultralytics HUB (DEPRECATED).
+
+    Args:
+        key (str, optional): A string containing either the API key and model ID combination (apikey_modelid),
+                               or the full model URL (https://hub.ultralytics.com/models/apikey_modelid).
     """
-    auth = Auth(key)
-    if not auth.get_state():
-        model_id = request_api_key(auth)
-    else:
-        _, model_id = split_key(key)
+    LOGGER.warning(f"""
+WARNING ⚠️ ultralytics.start() is deprecated in 8.0.60. Updated usage to train your Ultralytics HUB model is below:
 
-    if not model_id:
-        raise ConnectionError(emojis('Connecting with global API key is not currently supported. ❌'))
+from ultralytics import YOLO
 
-    session = HUBTrainingSession(model_id=model_id, auth=auth)
-    session.check_disk_space()
-
-    model = YOLO(model=session.model_file, session=session)
-    model.train(**session.train_args)
-
-
-def request_api_key(auth, max_attempts=3):
-    """
-    Prompt the user to input their API key. Returns the model ID.
-    """
-    import getpass
-    for attempts in range(max_attempts):
-        LOGGER.info(f'{PREFIX}Login. Attempt {attempts + 1} of {max_attempts}')
-        input_key = getpass.getpass('Enter your Ultralytics HUB API key:\n')
-        auth.api_key, model_id = split_key(input_key)
-
-        if auth.authenticate():
-            LOGGER.info(f'{PREFIX}Authenticated ✅')
-            return model_id
-
-        LOGGER.warning(f'{PREFIX}Invalid API key ⚠️\n')
-
-    raise ConnectionError(emojis(f'{PREFIX}Failed to authenticate ❌'))
+model = YOLO('https://hub.ultralytics.com/models/{key}')
+model.train()""")
 
 
 def reset_model(key=''):
@@ -63,9 +60,15 @@ def reset_model(key=''):
     LOGGER.warning(f'{PREFIX}Model reset failure {r.status_code} {r.reason}')
 
 
+def export_fmts_hub():
+    # Returns a list of HUB-supported export formats
+    from ultralytics.yolo.engine.exporter import export_formats
+    return list(export_formats()['Argument'][1:]) + ['ultralytics_tflite', 'ultralytics_coreml']
+
+
 def export_model(key='', format='torchscript'):
     # Export a model to all formats
-    assert format in EXPORT_FORMATS_HUB, f"Unsupported export format '{format}', valid formats are {EXPORT_FORMATS_HUB}"
+    assert format in export_fmts_hub(), f"Unsupported export format '{format}', valid formats are {export_fmts_hub()}"
     api_key, model_id = split_key(key)
     r = requests.post('https://api.ultralytics.com/export',
                       json={
@@ -78,7 +81,7 @@ def export_model(key='', format='torchscript'):
 
 def get_export(key='', format='torchscript'):
     # Get an exported model dictionary with download URL
-    assert format in EXPORT_FORMATS_HUB, f"Unsupported export format '{format}', valid formats are {EXPORT_FORMATS_HUB}"
+    assert format in export_fmts_hub, f"Unsupported export format '{format}', valid formats are {export_fmts_hub}"
     api_key, model_id = split_key(key)
     r = requests.post('https://api.ultralytics.com/get-export',
                       json={
