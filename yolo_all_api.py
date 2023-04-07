@@ -49,14 +49,14 @@ class YOLOModel(object):
         self.colors = [[random.randint(0, 255) for _ in range(3)] for _ in self.label_list]
         self.num_labels = len(self.label_list)
         # 判断使用的设备
-        if cpu:
-            self.device = torch.device("cpu")
-            self.n_gpu = 0
-            logger.info(f"使用CPU进行预测")
-        else:
+        if not cpu and torch.cuda.is_available():
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             self.n_gpu = torch.cuda.device_count() if torch.cuda.is_available() else 0
             logger.info(f"使用GPU进行预测")
+        else:
+            self.device = torch.device("cpu")
+            self.n_gpu = 0
+            logger.info(f"使用CPU进行预测")
         # 预测的batch_size大小
         self.train_batch_size = 8
         # 预测的batch_size大小
@@ -139,7 +139,7 @@ class YOLOModel(object):
             images.append(image)
             im1 = Image.open(image)
             image_array.append(im1)
-        predict_results = self.predict_model(source=image_array, save=self.save_img)  # save plotted images
+        predict_results = self.predict_model(source=image_array, save=self.save_img, device=self.device)  # save plotted images
         #计算耗时
         start = time.time()
         # path是图片的路径，img是图片的改变size后的numpy格式[channel, new_height,new_witdh], im0s是原始的图片,[height, width,channel], eg: (2200, 1700, 3), vid_cap 是None如果是图片，只对视频有作用
