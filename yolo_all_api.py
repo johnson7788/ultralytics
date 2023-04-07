@@ -139,7 +139,11 @@ class YOLOModel(object):
             images.append(image)
             im1 = Image.open(image)
             image_array.append(im1)
-        predict_results = self.predict_model(source=image_array, save=self.save_img, device=self.device)  # save plotted images
+        if self.device == "cuda":
+            device = "0"
+        else:
+            device = "cpu"
+        predict_results = self.predict_model(source=image_array, save=self.save_img, device=device)  # save plotted images
         #计算耗时
         start = time.time()
         # path是图片的路径，img是图片的改变size后的numpy格式[channel, new_height,new_witdh], im0s是原始的图片,[height, width,channel], eg: (2200, 1700, 3), vid_cap 是None如果是图片，只对视频有作用
