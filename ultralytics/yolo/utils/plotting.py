@@ -18,6 +18,10 @@ from .checks import check_font, check_version, is_ascii
 from .files import increment_path
 from .ops import clip_boxes, scale_image, xywh2xyxy, xyxy2xywh
 
+import matplotlib as mpl
+# 设置字体
+mpl.rcParams['font.sans-serif'] = ['SimHei', 'Arial']
+mpl.rcParams['axes.unicode_minus'] = False
 matplotlib.rc('font', **{'size': 11})
 matplotlib.use('Agg')  # for writing to files only
 

@@ -42,9 +42,8 @@ os.environ['KMP_DUPLICATE_LIB_OK']='True'
 class YOLOModel(object):
     def __init__(self, verbose=0, cpu=False):
         self.verbose = verbose
-        self.label_list = ['table','figure','equation','algorithm','title','paragraph','other','pgequation']
-        self.label_list_cn = ['表格','图像','公式','算法','标题','段落','其他','段落公式']
-        self.label_en2zh = dict(zip(self.label_list, self.label_list_cn))
+        self.label_list = ['大厨']
+        # self.label_en2zh = dict(zip(self.label_list, self.label_list_cn))
         #给每个类别的候选框设置一个颜色
         self.colors = [[random.randint(0, 255) for _ in range(3)] for _ in self.label_list]
         self.num_labels = len(self.label_list)
@@ -62,11 +61,10 @@ class YOLOModel(object):
         # 预测的batch_size大小
         self.predict_batch_size = 16
         #模型的名称或路径
-        self.weights = 'runs/train/all/weights/best.pt'      # 'yolov5s.pt'
-        # self.weights = 'runs/train/exp2/weights/last.pt'      # 'yolov5s.pt'
+        self.weights = 'runs/train/dachu_detection/weights/best.pt'      # 'yolov5s.pt'
         self.upload_dir = "runs/api/images"
-        self.img_size = 1024   #像素864, 1024
-        self.conf_thres = 0.5  #置信度, 大于这个置信度的才类别才取出来
+        self.img_size = 512   #像素864, 1024
+        self.conf_thres = 0.8  #置信度, 大于这个置信度的才类别才取出来
         self.iou_thres = 0.5  #IOU的NMS阈值
         self.view_img = False   #是否显示图片的结果
         self.save_img = True    #保存图片预测结果
@@ -165,8 +163,8 @@ class YOLOModel(object):
             image_shape = result.orig_shape
             labels = []
             for cls in boxes_cls_list:
-                label_en_name = label_dict[cls]
-                label = self.label_en2zh[label_en_name]
+                label = label_dict[cls]
+                # label = self.label_en2zh[label_en_name]
                 labels.append(label)
             # 图片的名称，bboex，置信度，标签，都加到结果, 原始图像的尺寸
             one_res = [image_path, boxes_cordinates_list, boxes_confidence_list, labels, image_shape]
@@ -324,4 +322,4 @@ def parse_args():
 if __name__ == "__main__":
     arg, helpmsg = parse_args()
     model = YOLOModel(cpu=arg.cpu)
-    app.run(host='0.0.0.0', port=5008, debug=False, threaded=True)
+    app.run(host='0.0.0.0', port=5038, debug=False, threaded=True)
